@@ -1,0 +1,52 @@
+name: Release
+on:
+    push:
+        tags:
+            - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2.7.0
+
+            - name: Install dependencies
+              run: |
+                  sudo apt-get update -yq
+                  sudo apt-get install -yq --no-install-recommends libudev-dev libasound2-dev libxcb-composite0-dev
+
+            - name: Verify tag matches crate version
+              run: |
+                  TAG_VERSION="${GITHUB_REF_NAME#v}"
+                  CRATE_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bevy_framepace") | .version')"
+                  if [ "$TAG_VERSION" != "$CRATE_VERSION" ]; then
+                    echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $CRATE_VERSION"
+                    exit 1
+                  fi
+                  echo "VERSION=$CRATE_VERSION" >> "$GITHUB_ENV"
+
+            - name: Test
+              run: cargo test --features=bevy_winit/x11
+
+            - name: Extract release notes from CHANGELOG
+              run: |
+                  awk -v ver="$VERSION" '
+                    /^# / { if (found) exit; if ($2 == ver) { found = 1; next } }
+                    found { print }
+                  ' CHANGELOG.md > release-notes.md
+                  cat release-notes.md
+
+            - name: Create GitHub release
+              run: |
+                  if [ -s release-notes.md ] && grep -q '[^[:space:]]' release-notes.md; then
+                    gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+                  else
+                    gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+                  fi
+              env:
+                  GH_TOKEN: ${{ github.token }}
